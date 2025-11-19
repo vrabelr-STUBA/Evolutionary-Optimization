@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 import time
 import random
+import matplotlib.pyplot as plt
 
 from scipy.integrate import solve_ivp
 from mealpy.swarm_based.PSO import OriginalPSO
@@ -35,7 +36,7 @@ from mealpy import Problem
 
 
 # ============================================================
-#                  GLOBAL SETTINGS
+# GLOBAL SETTINGS
 # ============================================================
 GLOBAL_SEED = 123
 np.random.seed(GLOBAL_SEED)
@@ -50,11 +51,12 @@ PID_BOUNDS = (0.0, 10.0)
 PIDD_BOUNDS = (0.0, 10.0)
 
 EPOCHS = 25 
-POP_SIZE =30 
-N_RUNS =50 
+POP_SIZE = 30
+N_RUNS = 50 
+
 
 # ============================================================
-#                  SPROTT SYSTEM
+# SPROTT SYSTEM
 # ============================================================
 def disturbance(t):
     return 0.5 * np.sin(2.5 * t)
@@ -64,28 +66,22 @@ def sprott_pid_ode(t, s, Kp, Ki, Kd):
     e, de = -x, -y
     u = Kp * e + Ki * I + Kd * de
     d = disturbance(t)
-    return [
-        y,
-        z,
-        -x - 0.6*y - 2*z + z*z - 0.4*x*y + d + u,
-        e
-    ]
+    return [y, z,
+            -x - 0.6*y - 2*z + z*z - 0.4*x*y + d + u,
+            e]
 
 def sprott_pidd_ode(t, s, Kp, Ki, Kd, Kdd):
     x, y, z, I = s
     e, de, dde = -x, -y, -z
     u = Kp*e + Ki*I + Kd*de + Kdd*dde
     d = disturbance(t)
-    return [
-        y,
-        z,
-        -x - 0.6*y - 2*z + z*z - 0.4*x*y + d + u,
-        e
-    ]
+    return [y, z,
+            -x - 0.6*y - 2*z + z*z - 0.4*x*y + d + u,
+            e]
 
 
 # ============================================================
-#               SYSTEM SIMULATION + COST
+# SIMULATION + COST
 # ============================================================
 def simulate_system(controller, gains):
 
@@ -102,7 +98,6 @@ def simulate_system(controller, gains):
             method="Radau", t_eval=TIME_GRID,
             rtol=1e-6, atol=1e-8
         )
-
         if not sol.success or np.isnan(sol.y).any():
             raise ValueError
 
@@ -125,7 +120,6 @@ def cost_function(controller, g):
     x, u, t = simulate_system(controller, g)
     if x is None:
         return 1e9
-
     J = alpha*np.trapz(t*np.abs(x), t) + beta*np.trapz(u*u, t)
     return np.inf if np.isnan(J) else J
 
@@ -137,14 +131,13 @@ def make_objective(controller):
 
 
 # ============================================================
-#            OPTIMIZATION FOR ONE RUN
+# OPTIMIZATION FOR ONE RUN
 # ============================================================
 def optimize_single_run(controller, algo, run_id):
 
     np.random.seed(GLOBAL_SEED + run_id)
     random.seed(GLOBAL_SEED + run_id)
 
-    # variable dimensions
     if controller == "PID":
         dim = 3
         lb = [PID_BOUNDS[0]] * dim
@@ -156,13 +149,9 @@ def optimize_single_run(controller, algo, run_id):
 
     bounds = [FloatVar(lb[i], ub[i]) for i in range(dim)]
 
-    problem = Problem(
-        bounds=bounds,
-        minmax="min",
-        obj_func=make_objective(controller)
-    )
+    problem = Problem(bounds=bounds, minmax="min",
+                      obj_func=make_objective(controller))
 
-    # choose optimizer
     if algo == "PSO":
         model = OriginalPSO(epoch=EPOCHS, pop_size=POP_SIZE)
     else:
@@ -173,15 +162,39 @@ def optimize_single_run(controller, algo, run_id):
     try:
         result = model.solve(problem)
         J = result.target.fitness
+        best_vec = result.solution  # <<< PRIDANE
     except Exception:
         J = 1e9
+        best_vec = None
 
     elapsed = time.time() - t0
-    return J, elapsed
+    return J, elapsed, best_vec
 
 
 # ============================================================
-#                      MAIN SCRIPT
+# PLOTTING 
+# ============================================================
+def plot_system(filename, title, uncontrolled, ps, de):
+    x_u, t = uncontrolled
+    x_pso, _ = ps
+    x_de, _ = de
+
+    plt.figure(figsize=(10, 3))
+    plt.plot(t, x_u, 'k', label="Uncontrolled")
+    plt.plot(t, x_pso, 'b', label="PSO best")
+    plt.plot(t, x_de, 'r', label="DE best")
+    plt.title(title)
+    plt.xlabel("Time [s]")
+    plt.ylabel("y(t)")
+    plt.grid(True, linewidth=0.5, alpha=0.7)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(filename, format='eps', dpi=300)
+    plt.close()
+
+
+# ============================================================
+# MAIN SCRIPT
 # ============================================================
 if __name__ == "__main__":
 
@@ -189,6 +202,12 @@ if __name__ == "__main__":
     algorithms = ["PSO", "DE"]
 
     results = []
+    best_gains = {
+        ("PID","PSO"): (1e9, None),
+        ("PID","DE"):  (1e9, None),
+        ("PIDD","PSO"): (1e9, None),
+        ("PIDD","DE"):  (1e9, None),
+    }
 
     total_runs = len(controllers) * len(algorithms) * N_RUNS
     print(f"Total runs: {total_runs}")
@@ -200,24 +219,62 @@ if __name__ == "__main__":
             for i in range(N_RUNS):
 
                 run_counter += 1
-                J, elapsed = optimize_single_run(controller, algo, i)
+                J, elapsed, g = optimize_single_run(controller, algo, i)
 
                 results.append((controller, algo, i, J, elapsed))
 
-                run_index = i + 1
+                # store best gains
+                key = (controller, algo)
+                if J < best_gains[key][0] and g is not None:
+                    best_gains[key] = (J, g)
 
-                print(
-                    f"[{run_counter:03d}/{total_runs}] "
-                    f"Run {run_index:02d}/{N_RUNS} — {controller}/{algo} — "
-                    f"J={J:.5g}, time={elapsed:.4f}s"
-                    )
+                print(f"[{run_counter:03d}/{total_runs}] "
+                      f"{controller}/{algo}, run {i+1:02d} — "
+                      f"J={J:.5g}, time={elapsed:.4f}s")
 
-
-    # Save results
-    df = pd.DataFrame(
-        results,
-        columns=["controller", "algo", "run", "J", "time_sec"]
-    )
+    # SAVE RUN RESULTS
+    df = pd.DataFrame(results,
+                      columns=["controller","algo","run","J","time_sec"])
     df.to_csv("all_runs.csv", index=False)
+    print("\nSaved all_runs.csv")
 
-    print("\nDONE. Results saved to all_runs.csv")
+    # SAVE BEST GAINS
+    rows = []
+    for (c,a),(J,g) in best_gains.items():
+        rows.append([c, a] + list(g))
+    bg = pd.DataFrame(rows)
+    bg.to_csv("best_gains.csv", index=False, header=False)
+    print("Saved best_gains.csv")
+
+    # ====================================================
+    # CREATE EPS PLOTS
+    # ====================================================
+    print("Generating EPS plots...")
+
+    # uncontrolled sim
+    xu, _, t = simulate_system("PID", [0,0,0])  # zero control → same for PID/PIDD
+
+    # PID plots
+    Jp, gp_pso = best_gains[("PID","PSO")]
+    Jd, gp_de  = best_gains[("PID","DE")]
+
+    x_pso, _, _ = simulate_system("PID", gp_pso)
+    x_de, _, _  = simulate_system("PID", gp_de)
+
+    plot_system("plot_PID.eps",
+                "PID – Uncontrolled vs PSO vs DE",
+                (xu, t), (x_pso, t), (x_de, t))
+
+    # PIDD plots
+    Jp2, gp_pso2 = best_gains[("PIDD","PSO")]
+    Jd2, gp_de2  = best_gains[("PIDD","DE")]
+
+    x_pso2, _, _ = simulate_system("PIDD", gp_pso2)
+    x_de2, _, _  = simulate_system("PIDD", gp_de2)
+
+    plot_system("plot_PIDD.eps",
+                "PIDD – Uncontrolled vs PSO vs DE",
+                (xu, t), (x_pso2, t), (x_de2, t))
+
+    print("Generated: plot_PID.eps, plot_PIDD.eps")
+    print("\nDONE.")
