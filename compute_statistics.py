@@ -1,6 +1,6 @@
 # ================================================================
 # MIT License
-#
+##
 # Copyright (c) 2025 Robert Vrabel
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -22,31 +22,12 @@
 # THE SOFTWARE.
 # ================================================================
 
-
 import pandas as pd
 import numpy as np
 
-# -----------------------------
-# Local bootstrap function 
-# -----------------------------
-def bootstrap_ci(data, n_bootstrap=2000, ci=0.95):
-    """Compute bootstrap confidence interval for the mean."""
-    data = np.array(data)
-    boot_means = []
-    n = len(data)
-
-    for _ in range(n_bootstrap):
-        sample = np.random.choice(data, n, replace=True)
-        boot_means.append(sample.mean())
-
-    lower = np.percentile(boot_means, (1 - ci) / 2 * 100)
-    upper = np.percentile(boot_means, (1 + ci) / 2 * 100)
-    return lower, upper
-
-
-# ============================================================
-# Load experimental results
-# ============================================================
+# -------------------------------------------------------------
+# Load experiment data
+# -------------------------------------------------------------
 df = pd.read_csv("all_runs.csv")
 
 controllers = df["controller"].unique()
@@ -55,20 +36,18 @@ algorithms = df["algo"].unique()
 summary_rows = []
 psi_rows = []
 
-# ============================================================
-# Compute J*, target thresholds
-# ============================================================
+# -------------------------------------------------------------
+# Compute J* and target levels (1% tolerance)
+# -------------------------------------------------------------
 J_star = {
     c: df[df["controller"] == c]["J"].min()
     for c in controllers
 }
+J_target = {c: 1.01 * J_star[c] for c in controllers}
 
-J_target = {c: J_star[c] * 1.01 for c in controllers}
-
-
-# ============================================================
-# Compute summary statistics and robustness
-# ============================================================
+# -------------------------------------------------------------
+# Summary statistics & robustness
+# -------------------------------------------------------------
 for c in controllers:
     for a in algorithms:
         sub = df[(df["controller"] == c) & (df["algo"] == a)]
@@ -88,19 +67,17 @@ for c in controllers:
             "robustness": RS,
         })
 
-
-# ============================================================
-# Pareto Superiority Index (PSI)
-# ============================================================
+# -------------------------------------------------------------
+# PSI — raw (J, time) dominance
+# -------------------------------------------------------------
 def dominates(j1, t1, j2, t2):
-    """Check if (j1,t1) Pareto dominates (j2,t2)."""
+    """Pareto dominance using raw objective and raw runtime."""
     return (j1 <= j2 and t1 <= t2) and (j1 < j2 or t1 < t2)
 
 for c in controllers:
-    dfP = df[df["controller"] == c]
-
-    pso = dfP[dfP["algo"] == "PSO"]
-    de = dfP[dfP["algo"] == "DE"]
+    dfC = df[df["controller"] == c]
+    pso = dfC[dfC["algo"] == "PSO"]
+    de  = dfC[dfC["algo"] == "DE"]
 
     count_pso_dom = 0
     count_de_dom = 0
@@ -119,10 +96,9 @@ for c in controllers:
         "PSI_DE_over_PSO": count_de_dom / total,
     })
 
-
-# ============================================================
-# Save outputs
-# ============================================================
+# -------------------------------------------------------------
+# Save results
+# -------------------------------------------------------------
 pd.DataFrame(summary_rows).to_csv("summary_statistics.csv", index=False)
 pd.DataFrame(psi_rows).to_csv("psi_statistics.csv", index=False)
 
